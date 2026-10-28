@@ -1,151 +1,153 @@
 import streamlit as st
-import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
 
-# Set the title and favicon that appear in the Browser's tab bar.
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title="HR Policy Assistant",
+    page_icon="🏢",
+    layout="centered"
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+POLICY = """
+Annual Leave:
+Employees are entitled to 24 days of annual leave per calendar year.
+Leave requests should normally be submitted at least 5 working days in advance.
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+Sick Leave:
+Employees who are unable to work due to illness should inform their manager
+before the start of their working day. A medical certificate may be required
+for extended periods of absence.
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+Paternity Leave:
+Eligible female employees are entitled to 15 working days of paternity leave.
+The leave should be taken within six months of the child's birth.
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+Work From Home:
+Employees may work from home up to 2 days per week with manager approval.
+Employees must remain available during normal working hours.
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+Travel Expenses:
+Employees travelling for business can claim reasonable hotel, transportation,
+and meal expenses. Original receipts should be submitted within 30 days
+of returning from the trip.
+"""
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
+# Keep each policy section together
+chunks = [
+    section.strip()
+    for section in POLICY.strip().split("\n\n")
+    if section.strip()
 ]
 
-st.header('GDP over time', divider='gray')
+@st.cache_resource
+def load_search_system():
+    model = SentenceTransformer(
+        "sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-''
+    embeddings = model.encode(chunks)
 
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(np.asarray(embeddings, dtype="float32"))
+
+    return model, index
+
+# Styling
+st.markdown("""
+<style>
+.stApp {
+    background-color: #f5f7fb;
+}
+.block-container {
+    max-width: 800px;
+    padding-top: 2rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.title("🏢 HR Policy Assistant")
+st.write(
+    "Your company policy helper. Ask about leave, "
+    "work from home, or travel expenses."
 )
 
-''
-''
+st.info("Ask a question to retrieve relevant HR policy sections.")
 
+# Example questions
+examples = [
+    "How many days of annual leave can I take?",
+    "Can a male employee take paternity leave?",
+    "How many days can I work from home?",
+    "When should I submit travel receipts?"
+]
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+selected = st.selectbox(
+    "Try an example question",
+    ["Choose an example..."] + examples
+)
 
-st.header(f'GDP in {to_year}', divider='gray')
+question = st.text_input(
+    "Your question",
+    value="" if selected == "Choose an example..." else selected,
+    placeholder="Type your HR question here..."
+)
 
-''
+if st.button("🔍 Search HR Policy", type="primary",
+             use_container_width=True):
 
-cols = st.columns(4)
+    if not question.strip():
+        st.warning("Please enter a question.")
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+    else:
+        with st.spinner("Searching policy documents..."):
+            model, index = load_search_system()
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+            query_embedding = model.encode([question])
+            query_vector = np.asarray(
+                query_embedding, dtype="float32"
+            )
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
+            k = min(3, index.ntotal)
+            distances, indices = index.search(query_vector, k)
+
+            results = [
+                chunks[i]
+                for i in indices[0]
+                if i >= 0
+            ]
+
+        st.subheader("📄 Retrieved policy sections")
+
+        for number, result in enumerate(results, start=1):
+            with st.expander(
+                f"Policy result {number}",
+                expanded=(number == 1)
+            ):
+                st.write(result)
+
+        st.subheader("💬 Policy guidance")
+
+        if "paternity" in question.lower():
+            st.warning(
+                "The supplied policy states that eligible female "
+                "employees receive 15 working days of paternity leave, "
+                "to be taken within six months of the child's birth. "
+                "It does not clarify male employee eligibility. "
+                "Please confirm with HR."
+            )
         else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+            st.write(
+                "Use the retrieved policy sections above to review "
+                "the rules relevant to your question. This version "
+                "retrieves text but does not yet generate a complete "
+                "AI-written answer."
+            )
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+        st.caption(
+            "For unclear or missing rules, contact your HR department."
         )
+
+st.divider()
+st.caption("HR Policy Assistant | Powered by FAISS and Sentence Transformers")
